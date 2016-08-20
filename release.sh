@@ -62,9 +62,9 @@ game_version=
 game_version_id=
 
 # Secrets for uploading
-cf_token=$CF_API_KEY
-github_token=$GITHUB_OAUTH
-wowi_token=$WOWI_API_TOKEN
+cf_token="abc123"
+github_token="abc123"
+wowi_token="abc123"
 
 # Variables set via options.
 slug=
@@ -624,6 +624,9 @@ if [ -n "$previous_version" ]; then
 fi
 if [ -n "$slug" ]; then
 	echo "CurseForge ID: $slug"
+	for _ul_site_url in $site_url; do
+		(set -x; curl -s -I "${_ul_site_url}/addons/$slug/localization/")
+	done
 fi
 if [ -n "$addonid" ]; then
 	echo "WoWInterface ID: $addonid"
@@ -1705,7 +1708,7 @@ if [ -z "$skip_zipfile" ]; then
 		upload_to_curseforge() {
 			echo "Uploading $archive_name ($file_type/$game_version/$game_version_id) to https://wow.curseforge.com/addons/$slug"
 			resultfile="$releasedir/cf_result.json"
-			result=$( curl -s \
+			result=$( set -x; curl -s \
 					-w "%{http_code}" -o "$resultfile" \
 					-H "X-API-Key: $cf_token" \
 					-A "GitHub Curseforge Packager/1.0" \
