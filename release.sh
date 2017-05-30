@@ -34,20 +34,10 @@ if [ -n "$TRAVIS" ]; then
 		echo "Not packaging pull request."
 		exit 0
 	fi
-	# only want to package master and tags
-	if [ "$TRAVIS_BRANCH" != "master" -a -z "$TRAVIS_TAG" ]; then
-		echo "Not packaging \"${TRAVIS_BRANCH}\"."
-		exit 0
-	fi
-	# don't need to run the packager if there is a tag pending (or already built)
+	# only want to package tags
 	if [ -z "$TRAVIS_TAG" ]; then
-		TRAVIS_COMMIT_TIMESTAMP=$( git -C "$TRAVIS_BUILD_DIR" show --no-patch --format='%at' $TRAVIS_COMMIT)
-		for tag in $(git -C "$TRAVIS_BUILD_DIR" for-each-ref --sort=-taggerdate --count=3 --format '%(refname:short)' refs/tags); do
-			if [[ $( git -C "$TRAVIS_BUILD_DIR" cat-file -p "$tag" | awk '/^tagger/ {print $(NF-1); exit}' ) > $TRAVIS_COMMIT_TIMESTAMP ]]; then
-				echo "Found future tag '$tag', not packaging."
-				exit 0
-			fi
-		done
+		echo "Not packaging branches."
+		exit 0
 	fi
 fi
 
