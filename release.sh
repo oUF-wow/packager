@@ -233,7 +233,7 @@ if [ -f "$topdir/$tocfile" ]; then
 	# Set the package name from the TOC filename.
 	package=${tocfile%.toc}
 	# Parse the TOC file for the title of the project used in the changelog.
-	project=$( grep '## Title:' "$topdir/$tocfile" | sed -e 's/## Title\s*:\s*\(.*\)\s*/\1/' -e 's/|c[0-9A-Fa-f]\{8\}//g' -e 's/|r//g' )
+	project=$( awk '/## Title:/' < "$topdir/$tocfile" | sed -e 's/## Title\s*:\s*\(.*\)\s*/\1/' -e 's/|c[0-9A-Fa-f]\{8\}//g' -e 's/|r//g' )
 	# Grab CurseForge slug and WoWI ID from the TOC file.
 	if [ -z "$slug" ]; then
 		slug=$( awk '/## X-Curse-Project-ID:/ { print $NF }' < "$topdir/$tocfile" )
@@ -275,7 +275,7 @@ set_info_git() {
 	si_repo_type="git"
 	si_repo_url=$( git -C "$si_repo_dir" remote get-url origin 2>/dev/null | sed -e 's/^git@\(.*\):/https:\/\/\1\//' )
 	if [ -z "$si_repo_url" ]; then # no origin so grab the first fetch url
-		si_repo_url=$( git -C "$si_repo_dir" remote -v | grep '(fetch)' | awk '{ print $2; exit }' | sed -e 's/^git@\(.*\):/https:\/\/\1\//' )
+		si_repo_url=$( git -C "$si_repo_dir" remote -v | awk '/(fetch)/ { print $2; exit }' | sed -e 's/^git@\(.*\):/https:\/\/\1\//' )
 	fi
 
 	# Populate filter vars.
@@ -438,6 +438,17 @@ if [ -z "$slug" ]; then
 	slug=$( echo "$basedir" | tr '[:upper:].' '[:lower:]-' )
 fi
 
+# Set the Curse project site
+if [[ "$slug" =~ ^[0-9]+$ ]]; then
+	# There is no good way of differentiating between sites short of using different TOC fields for CF and WowAce
+	# Curse does redirect to the proper site when using the project id, so we'll use that to get the API url
+	_ul_test_url="https://wow.curseforge.com/projects/$slug"
+	_ul_test_url_result=$( curl -s -L -w "%{url_effective}" -o /dev/null $_ul_test_url )
+	if [ "$_ul_test_url" != "$_ul_test_url_result" ]; then
+		project_site=${_ul_test_url_result%%/project*}
+	fi
+fi
+
 # Bare carriage-return character.
 carriage_return=$( printf "\r" )
 
@@ -585,7 +596,7 @@ elif [ "$repository_type" = "svn" ]; then
 	# svn always being difficult.
 	OLDIFS=$IFS
 	IFS=$'\n'
-	for _vcs_ignore in $( cd "$topdir" && svn status --no-ignore | grep '^[?I]' | cut -c9- | tr '\\' '/' ); do
+	for _vcs_ignore in $( cd "$topdir" && svn status --no-ignore --ignore-externals | awk '/^[?IX]/' | cut -c9- | tr '\\' '/' ); do
 		if [ -d "$topdir/$_vcs_ignore" ]; then
 			_vcs_ignore="$_vcs_ignore/*"
 		fi
@@ -611,7 +622,11 @@ if [ -n "$previous_version" ]; then
 	echo "Previous version: $previous_version"
 fi
 if [ -n "$slug" ]; then
-	echo "CurseForge ID: $slug${cf_token:+ [token set]}"
+	if [ "$project_site" == "https://www.wowace.com" ]; then
+		echo "WowAce ID: $slug${cf_token:+ [token set]}"
+	else
+		echo "CurseForge ID: $slug${cf_token:+ [token set]}"
+	fi
 fi
 if [ -n "$addonid" ]; then
 	echo "WoWInterface ID: $addonid${wowi_token:+ [token set]}"
@@ -664,14 +679,8 @@ simple_filter() {
 # Find URL of localization api.
 set_localization_url() {
 	localization_url=
-	if [ -n "$slug" -a -n "$cf_token" ] && [[ "$slug" =~ ^[0-9]+$ ]]; then
-		# There is no good way of differentiating between sites short of using different TOC fields for CF and WowAce
-		# Curse does redirect to the proper site when using the project id, so we'll use that to get the API url
-		_ul_test_url="https://wow.curseforge.com/projects/$slug"
-		_ul_test_url_result=$( curl -s -L -w "%{url_effective}" -o /dev/null $_ul_test_url )
-		if [ "$_ul_test_url" != "$_ul_test_url_result" ]; then
-			localization_url="${_ul_test_url_result%%/project*}/api/projects/$slug/localization/export"
-		fi
+	if [ -n "$slug" -a -n "$cf_token" -a -n "$project_site" ]; then
+		localization_url="${project_site}/api/projects/$slug/localization/export"
 	fi
 	if [ -z "$localization_url" ]; then
 		echo "Skipping localization! Missing CurseForge API token and/or project id is invalid."
@@ -1206,10 +1215,18 @@ checkout_external() {
 	(
 		cd "$_cqe_checkout_dir" || return 1
 		# Set the slug for external localization, if needed.
+		# Note: We don't actually do localization since we need the project id and
+		# the only way to convert slug->id would be to scrape the project page :\
 		slug=
+		project_site=
 		if [[ "$_external_uri" == *"curseforge.com"* || "$_external_uri" == *"wowace.com"* ]]; then
 			slug=${_external_uri#*/wow/}
 			slug=${slug%%/*}
+			if [[ "$_external_uri" == *"wowace.com"* ]]; then
+				project_site="https://www.wowace.com"
+			else
+				project_site="https://wow.curseforge.com"
+			fi
 		fi
 		# If a .pkgmeta file is present, process it for an "ignore" list.
 		ignore=
@@ -1723,7 +1740,7 @@ if [ -z "$skip_zipfile" ]; then
 	### Deploy the zipfile.
 	###
 
-	upload_curseforge=$( test -z "$skip_upload" -a -n "$slug" -a -n "$cf_token" && echo true )
+	upload_curseforge=$( test -z "$skip_upload" -a -n "$slug" -a -n "$cf_token" -a "$project_site" == "https://wow.curseforge.com" && echo true )
 	upload_wowinterface=$( test -z "$skip_upload" -a -n "$tag" -a -n "$addonid" -a -n "$wowi_token" && echo true )
 	upload_github=$( test -z "$skip_upload" -a -n "$tag" -a -n "$project_github_slug" -a -n "$github_token" && echo true )
 
@@ -1754,23 +1771,6 @@ if [ -z "$skip_zipfile" ]; then
 		fi
 	fi
 
-	if [ -n "$upload_wowinterface" ]; then
-		if [ -n "$game_version" ]; then
-			game_version=$( curl -s -H "x-api-token: $wowi_token" https://api.wowinterface.com/addons/compatible.json | jq -r '.[] | select(.id == "'$game_version'") | .id' 2>/dev/null )
-		fi
-		if [ -z "$game_version" ]; then
-			game_version=$( curl -s -H "x-api-token: $wowi_token" https://api.wowinterface.com/addons/compatible.json | jq -r '.[] | select(.default == true) | .id' 2>/dev/null )
-		fi
-		if [ -z "$game_version" ]; then
-			echo "Error fetching game version info from https://api.wowinterface.com/addons/compatible.json"
-			echo
-			echo "Skipping upload to WoWInterface."
-			echo
-			upload_wowinterface=
-			exit_code=1
-		fi
-	fi
-
 	# Upload to CurseForge.
 	if [ -n "$upload_curseforge" ]; then
 		# If the tag contains only dots and digits and optionally starts with
@@ -1780,7 +1780,7 @@ if [ -z "$skip_zipfile" ]; then
 		# are considered alphas.
 		file_type=alpha
 		if [ -n "$tag" ]; then
-			if [[ "$tag" =~ ^v?[0-9][0-9.]*$ || "$tag" == *"release"* ]]; then
+			if [[ "$tag" =~ ^v?[0-9][0-9.]*$ || "${tag,,}" == *"release"* ]]; then
 				file_type=release
 			else
 				file_type=beta
@@ -1798,7 +1798,7 @@ if [ -z "$skip_zipfile" ]; then
 		EOF
 		)
 
-		echo "Uploading $archive_name ($game_version $file_type) to https://wow.curseforge.com/addons/$slug"
+		echo "Uploading $archive_name ($game_version $file_type) to https://wow.curseforge.com/projects/$slug"
 		resultfile="$releasedir/cf_result.json"
 		result=$( curl -sS --retry 3 --retry-delay 10 \
 				-w "%{http_code}" -o "$resultfile" \
@@ -1832,6 +1832,23 @@ if [ -z "$skip_zipfile" ]; then
 		echo
 
 		rm -f "$resultfile" 2>/dev/null
+	fi
+
+	if [ -n "$upload_wowinterface" ]; then
+		if [ -n "$game_version" ]; then
+			game_version=$( curl -s -H "x-api-token: $wowi_token" https://api.wowinterface.com/addons/compatible.json | jq -r '.[] | select(.id == "'$game_version'") | .id' 2>/dev/null )
+		fi
+		if [ -z "$game_version" ]; then
+			game_version=$( curl -s -H "x-api-token: $wowi_token" https://api.wowinterface.com/addons/compatible.json | jq -r '.[] | select(.default == true) | .id' 2>/dev/null )
+		fi
+		if [ -z "$game_version" ]; then
+			echo "Error fetching game version info from https://api.wowinterface.com/addons/compatible.json"
+			echo
+			echo "Skipping upload to WoWInterface."
+			echo
+			upload_wowinterface=
+			exit_code=1
+		fi
 	fi
 
 	# Upload tags to WoWInterface.
